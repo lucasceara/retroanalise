@@ -97,8 +97,8 @@ def rodar_pipeline(df, camadas, percentil=15):
         g = GaussianMixture(n_components=k, covariance_type="full",
                             random_state=42, n_init=10)
         g.fit(X_resamp)
-        bic.append(g.bic(X_resamp))
-        aic.append(g.aic(X_resamp))
+        bic.append(g.bic(X_scaled))   # BIC nos dados originais (n real)
+        aic.append(g.aic(X_scaled))   # garante penalização adequada
     k_otimo = int(np.argmin(bic)) + 1
 
     # GMM final
