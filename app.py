@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import IsolationForest
 from scipy.stats import gaussian_kde, norm
 from matplotlib.backends.backend_pdf import PdfPages
 import io
@@ -88,18 +87,15 @@ def carregar_arquivo(uploaded_file):
     # Remove linhas com qualquer NaN restante
     df = df.dropna()
 
+    # Remove duplicatas exatas
+    df = df.drop_duplicates().reset_index(drop=True)
+
+
     return df, camadas
 
 
 def rodar_pipeline(df, camadas, percentil=15):
     """Pipeline GMM completo. Funciona com 3 ou 4 camadas."""
-
-    # Remoção de outliers multivariados via Isolation Forest
-    # contamination=0.05 remove apenas pontos claramente espúrios (até 5% da amostra)
-    iso = IsolationForest(contamination=0.05, random_state=42)
-    mask = iso.fit_predict(df[camadas].values) == 1
-    n_removidos = (~mask).sum()
-    df = df[mask].copy().reset_index(drop=True)
 
     # Pesos pelo RMSE
     pesos = 1.0 / df["RMSE"].values
@@ -163,8 +159,7 @@ def rodar_pipeline(df, camadas, percentil=15):
         "gmm": gmm, "labels": labels,
         "means": means, "stds": stds,
         "comp_dom": comp_dom, "resultados": resultados,
-        "z": z, "percentil": percentil,
-        "n_removidos": n_removidos
+        "z": z, "percentil": percentil
     }
 
 
@@ -476,13 +471,6 @@ if uploaded_files:
                 ):
                     r = res["resultados"]
                     camadas = res["camadas"]
-
-                    # Aviso de outliers removidos
-                    if res["n_removidos"] > 0:
-                        st.warning(
-                            f"⚠️ {res['n_removidos']} ponto(s) identificado(s) como outlier(s) "
-                            f"multivariado(s) pelo Isolation Forest e removido(s) antes do ajuste GMM."
-                        )
 
                     # Métricas rápidas
                     cols_met = st.columns(len(camadas) + 1)
