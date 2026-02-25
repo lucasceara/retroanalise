@@ -51,26 +51,42 @@ def detectar_camadas(df_raw):
 
 
 def carregar_arquivo(uploaded_file):
-    """Carrega CSV ou XLSX, detecta camadas e padroniza colunas."""
+    """
+    Carrega CSV ou XLSX.
+    Sempre usa as primeiras 4 ou 5 colunas, ignorando nomes originais.
+    Ordem obrigatória: Revestimento, Base, [Sub-base,] Subleito, RMSE.
+    Nomes das colunas e textos extras são ignorados — renomeação na força.
+    """
     nome = uploaded_file.name.lower()
     if nome.endswith(".xlsx"):
-        df = pd.read_excel(uploaded_file)
+        df = pd.read_excel(uploaded_file, header=0)
     else:
         try:
-            df = pd.read_csv(uploaded_file, sep=";")
+            df = pd.read_csv(uploaded_file, sep=";", header=0)
             if df.shape[1] < 4:
                 uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file, sep=",")
+                df = pd.read_csv(uploaded_file, sep=",", header=0)
         except Exception:
             uploaded_file.seek(0)
-            df = pd.read_csv(uploaded_file, sep=",")
+            df = pd.read_csv(uploaded_file, sep=",", header=0)
 
-    df.columns = [c.strip() for c in df.columns]
+    # Pega apenas as primeiras 5 colunas e converte tudo para numérico
+    df = df.iloc[:, :5].copy()
+    df = df.apply(pd.to_numeric, errors="coerce")
+
+    # Remove linhas onde TODAS as colunas são NaN (linhas de texto/cabeçalho extra)
+    df = df.dropna(how="all")
+
+    # Detecta se tem 3 ou 4 camadas pelo número de colunas com dados
     camadas = detectar_camadas(df)
-    df = df.iloc[:, :len(camadas) + 1]
+
+    # Mantém apenas as colunas necessárias e renomeia na força
+    df = df.iloc[:, :len(camadas) + 1].copy()
     df.columns = camadas + ["RMSE"]
+
+    # Remove linhas com qualquer NaN restante
     df = df.dropna()
-    df = df.apply(pd.to_numeric, errors="coerce").dropna()
+
     return df, camadas
 
 
