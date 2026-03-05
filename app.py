@@ -3,9 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from sklearn.mixture import GaussianMixture
-from sklearn.preprocessing import StandardScaler
-from scipy.stats import gaussian_kde, norm
+from scipy.stats import gaussian_kde
 from matplotlib.backends.backend_pdf import PdfPages
 import io
 import warnings
@@ -15,48 +13,43 @@ warnings.filterwarnings("ignore")
 # CONFIGURAÇÃO DA PÁGINA
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="GMM — Pavimentos Aeroportuários",
+    page_title="KDE — Pavimentos Aeroportuários",
     page_icon="✈️",
     layout="wide"
 )
 
 st.title("✈️ Módulo Representativo — Pavimentos Aeroportuários")
 st.markdown(
-    "Metodologia baseada em **Mistura de Gaussianas (GMM)** para determinação "
-    "do módulo de resiliência representativo a partir de dados retroanalisados (FWD)."
+    "Metodologia baseada em **Kernel Density Estimation (KDE)** ponderado pelo RMSE "
+    "para determinação do módulo de resiliência representativo a partir de dados "
+    "retroanalisados (FWD/HWD)."
 )
 st.markdown("---")
+
+# ─────────────────────────────────────────────────────────────
+# CONSTANTES
+# ─────────────────────────────────────────────────────────────
+LIMITE_ERRO_RMS = 15.0
+N_RESAMPLE      = 10000
+
 
 # ─────────────────────────────────────────────────────────────
 # FUNÇÕES
 # ─────────────────────────────────────────────────────────────
 def detectar_camadas(df_raw):
-    """
-    Detecta automaticamente se o arquivo tem 3 ou 4 camadas.
-    Última coluna = sempre RMSE.
-    Colunas intermediárias = camadas na ordem correta.
-    Aceita 4 colunas (3 camadas) ou 5 colunas (4 camadas).
-    """
     n_cols = df_raw.shape[1]
     if n_cols == 4:
-        camadas = ["Revestimento", "Base", "Subleito"]
+        return ["Revestimento", "Base", "Subleito"]
     elif n_cols == 5:
-        camadas = ["Revestimento", "Base", "Sub-base", "Subleito"]
+        return ["Revestimento", "Base", "Sub-base", "Subleito"]
     else:
         raise ValueError(
-            f"Arquivo com {n_cols} colunas não é suportado. "
+            f"Arquivo com {n_cols} colunas não suportado. "
             "Esperado: 4 colunas (3 camadas + RMSE) ou 5 colunas (4 camadas + RMSE)."
         )
-    return camadas
 
 
 def carregar_arquivo(uploaded_file):
-    """
-    Carrega CSV ou XLSX.
-    Sempre usa as primeiras 4 ou 5 colunas, ignorando nomes originais.
-    Ordem obrigatória: Revestimento, Base, [Sub-base,] Subleito, RMSE.
-    Nomes das colunas e textos extras são ignorados — renomeação na força.
-    """
     nome = uploaded_file.name.lower()
     if nome.endswith(".xlsx"):
         df = pd.read_excel(uploaded_file, header=0)
@@ -70,218 +63,188 @@ def carregar_arquivo(uploaded_file):
             uploaded_file.seek(0)
             df = pd.read_csv(uploaded_file, sep=",", header=0)
 
-    # Pega apenas as primeiras 5 colunas e converte tudo para numérico
     df = df.iloc[:, :5].copy()
     df = df.apply(pd.to_numeric, errors="coerce")
-
-    # Remove linhas onde TODAS as colunas são NaN (linhas de texto/cabeçalho extra)
     df = df.dropna(how="all")
-
-    # Detecta se tem 3 ou 4 camadas pelo número de colunas com dados
     camadas = detectar_camadas(df)
-
-    # Mantém apenas as colunas necessárias e renomeia na força
     df = df.iloc[:, :len(camadas) + 1].copy()
     df.columns = camadas + ["RMSE"]
-
-    # Remove linhas com qualquer NaN restante
-    df = df.dropna()
-
-    # Remove duplicatas exatas
-    df = df.drop_duplicates().reset_index(drop=True)
-
-
+    df = df.dropna().drop_duplicates().reset_index(drop=True)
     return df, camadas
 
 
-def rodar_pipeline(df, camadas, percentil=15):
-    """Pipeline GMM completo. Funciona com 3 ou 4 camadas."""
+def calcular_kde_camada(serie, rmse_serie, percentil):
+    temp = pd.DataFrame({
+        "val": pd.to_numeric(serie, errors="coerce"),
+        "err": pd.to_numeric(rmse_serie, errors="coerce")
+    }).dropna()
 
-    # Pesos pelo RMSE
-    pesos = 1.0 / df["RMSE"].values
+    # Filtro RMSE com fallback
+    temp_clean = temp[temp["err"] <= LIMITE_ERRO_RMS].copy()
+    fallback = len(temp_clean) < 5
+    if fallback:
+        temp_clean = temp.copy()
+
+    pesos = 1.0 / temp_clean["err"].values.astype(float)
     pesos = pesos / pesos.sum()
+    vals  = temp_clean["val"].values.astype(float)
 
-    # Reamostragem ponderada
-    np.random.seed(42)
-    idx = np.random.choice(len(df), size=500, replace=True, p=pesos)
+    # Estatísticas sem ponderação (μ−σ clássico)
+    mu    = vals.mean()
+    sigma = vals.std(ddof=1)
+    cv    = sigma / mu if mu != 0 else 0
 
-    # Padronização
-    X = df[camadas].values
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    X_resamp = X_scaled[idx]
+    # KDE ponderado
+    kde     = gaussian_kde(vals, weights=pesos, bw_method="silverman")
+    v_min   = vals.min() * 0.5
+    v_max   = vals.max() * 1.5
+    amostra = kde.resample(N_RESAMPLE).flatten()
+    amostra = amostra[(amostra >= v_min) & (amostra <= v_max)]
+    if len(amostra) == 0:
+        amostra = vals
+    e_rep_p = np.percentile(amostra, percentil)
 
-    # Seleção de K via BIC
-    bic, aic = [], []
-    for k in range(1, 6):
-        g = GaussianMixture(n_components=k, covariance_type="diag",
-                            random_state=42, n_init=10)
-        g.fit(X_resamp)
-        bic.append(g.bic(X_scaled))   # BIC nos dados originais (n real)
-        aic.append(g.aic(X_scaled))   # garante penalização adequada
-    k_otimo = int(np.argmin(bic)) + 1
-
-    # GMM final
-    gmm = GaussianMixture(n_components=k_otimo, covariance_type="diag",
-                          random_state=42, n_init=20)
-    gmm.fit(X_resamp)
-    labels = gmm.predict(X_scaled)
-
-    # Parâmetros na escala original
-    # covariance_type=diag: covariances_ shape (K, n_features), sem termos cruzados
-    means = scaler.inverse_transform(gmm.means_)
-    stds  = np.zeros_like(means)
-    for k in range(k_otimo):
-        stds[k] = np.sqrt(gmm.covariances_[k]) * scaler.scale_
-
-    # Componente dominante — sempre pelo subleito (última camada)
-    idx_sub  = camadas.index("Subleito")
-    comp_dom = int(np.argmin(means[:, idx_sub]))
-
-    # z pelo percentil
-    z = norm.ppf(1 - percentil / 100)
-
-    # E_rep por camada
-    resultados = {}
-    for i, cam in enumerate(camadas):
-        mu    = means[comp_dom, i]
-        sigma = stds[comp_dom, i]
-        cv    = sigma / mu
-        E_rep = max(mu - z * sigma, 0)
-        resultados[cam] = {
-            "mu": mu, "sigma": sigma, "cv": cv,
-            "E_rep": E_rep, "percentil": percentil
-        }
+    # μ−σ clássico (sem ponderação)
+    e_rep_ms = max(mu - sigma, 0)
 
     return {
-        "df": df, "pesos": pesos, "camadas": camadas,
-        "k_otimo": k_otimo, "bic": bic, "aic": aic,
-        "gmm": gmm, "labels": labels,
-        "means": means, "stds": stds,
-        "comp_dom": comp_dom, "resultados": resultados,
-        "z": z, "percentil": percentil
+        "kde": kde, "vals": vals, "pesos": pesos,
+        "mu": mu, "sigma": sigma, "cv": cv,
+        "E_rep": e_rep_p,
+        "e_rep_ms": e_rep_ms,
+        "percentil": percentil,
+        "n_total": len(temp),
+        "n_filtrado": len(temp_clean),
+        "fallback": fallback
+    }
+
+
+def rodar_pipeline(df, camadas, percentil=15):
+    resultados = {}
+    for cam in camadas:
+        resultados[cam] = calcular_kde_camada(df[cam], df["RMSE"], percentil)
+    return {
+        "df": df,
+        "camadas": camadas,
+        "resultados": resultados,
+        "percentil": percentil
     }
 
 
 def gerar_figura(res, nome_segmento):
-    """Gera figura adaptada para 3 ou 4 camadas."""
-    CORES      = ["#2196F3","#FF5722","#4CAF50","#9C27B0","#FF9800"]
+    COR_KDE = "#0077B6"
+    COR_P   = "#E74C3C"
+    COR_MS  = "#E07A00"
+    COR_MU  = "#1A1A2E"
+
     df         = res["df"]
     camadas    = res["camadas"]
-    n_camadas  = len(camadas)
-    k_otimo    = res["k_otimo"]
-    gmm        = res["gmm"]
-    means      = res["means"]
-    stds       = res["stds"]
-    labels     = res["labels"]
-    pesos      = res["pesos"]
     resultados = res["resultados"]
-    bic        = res["bic"]
-    aic        = res["aic"]
-    comp_dom   = res["comp_dom"]
-    pesos_comp = gmm.weights_
+    percentil  = res["percentil"]
+    n_camadas  = len(camadas)
+    n_cols     = n_camadas + 1
 
-    # Layout: linha 0 = distribuições + BIC | linha 1 = scatters + RMSE + tabela
-    n_cols = n_camadas + 1   # camadas + BIC
-    fig = plt.figure(figsize=(5 * n_cols, 12))
+    fig = plt.figure(figsize=(5 * n_cols, 10))
     fig.suptitle(
         f"Segmento: {nome_segmento}  |  {n_camadas} camadas  |  "
-        f"K = {k_otimo}  |  P{res['percentil']}",
+        f"KDE ponderado RMSE  |  P{percentil} vs μ−σ",
         fontsize=13, fontweight="bold"
     )
     gs = gridspec.GridSpec(2, n_cols, figure=fig, hspace=0.48, wspace=0.38)
 
-    # ── Linha 0: distribuições ──
+    # ── Linha 0: distribuições KDE ──
     for i, cam in enumerate(camadas):
-        ax  = fig.add_subplot(gs[0, i])
-        dados = df[cam].values
-        kde   = gaussian_kde(dados, weights=pesos, bw_method="silverman")
-        x_r   = np.linspace(dados.min() * 0.85, dados.max() * 1.10, 500)
-        ax.plot(x_r, kde(x_r), "k-", lw=2, label="KDE ponderado", zorder=5)
-        for k in range(k_otimo):
-            y_k = pesos_comp[k] * norm.pdf(x_r, means[k, i], stds[k, i])
-            lw  = 2.5 if k == comp_dom else 1.2
-            ax.fill_between(x_r, y_k, alpha=0.25, color=CORES[k])
-            ax.plot(x_r, y_k, color=CORES[k], lw=lw,
-                    label=f"C{k+1}{'★' if k==comp_dom else ''} "
-                          f"(w={pesos_comp[k]:.2f})")
-        r = resultados[cam]
-        ax.axvline(r["E_rep"], color="red",  lw=2,   ls="--",
-                   label=f"E_rep={r['E_rep']:.0f}")
-        ax.axvline(r["mu"],   color="navy", lw=1.5, ls=":",
-                   label=f"μ={r['mu']:.0f}")
+        ax = fig.add_subplot(gs[0, i])
+        r  = resultados[cam]
+        x_r = np.linspace(r["vals"].min() * 0.80, r["vals"].max() * 1.15, 500)
+        y_r = r["kde"](x_r)
+
+        ax.fill_between(x_r, y_r, alpha=0.15, color=COR_KDE)
+        ax.plot(x_r, y_r, color=COR_KDE, lw=2.5, label="KDE ponderado")
+        ax.axvline(r["E_rep"], color=COR_P, lw=2, ls="--",
+                   label=f"P{percentil} = {r['E_rep']:.0f}")
+        ax.axvline(r["e_rep_ms"], color=COR_MS, lw=2, ls="-.",
+                   label=f"μ−σ = {r['e_rep_ms']:.0f}")
+        ax.axvline(r["mu"], color=COR_MU, lw=1.2, ls=":",
+                   label=f"μ = {r['mu']:.0f}")
         ax.set_title(cam, fontweight="bold")
         ax.set_xlabel("Módulo (MPa)")
         ax.set_ylabel("Densidade")
-        ax.legend(fontsize=6.5)
+        ax.legend(fontsize=7)
 
-    # BIC/AIC
-    ax_bic = fig.add_subplot(gs[0, n_camadas])
-    ax_bic.plot(range(1, 6), bic, "bo-",  lw=2, label="BIC")
-    ax_bic.plot(range(1, 6), aic, "rs--", lw=2, label="AIC")
-    ax_bic.axvline(k_otimo, color="green", lw=2, ls=":", label=f"K={k_otimo}")
-    ax_bic.set_xlabel("K")
-    ax_bic.set_ylabel("Score")
-    ax_bic.set_title("Seleção de K — BIC/AIC", fontweight="bold")
-    ax_bic.legend()
+        if r["fallback"]:
+            ax.text(0.97, 0.97, "⚠ fallback\n(todos os dados)",
+                    transform=ax.transAxes, fontsize=6.5,
+                    ha="right", va="top", color="#E07A00",
+                    bbox=dict(boxstyle="round,pad=0.3",
+                              fc="#FFF8EE", ec="#E07A00", lw=0.8))
 
-    # ── Linha 1: scatters, RMSE, tabela ──
-    # Scatter: pares de camadas adjacentes
-    pares = [(camadas[i], camadas[i+1]) for i in range(n_camadas - 1)]
-    for p_idx, (cam_x, cam_y) in enumerate(pares):
-        ax_s = fig.add_subplot(gs[1, p_idx])
-        for k in range(k_otimo):
-            m = labels == k
-            ax_s.scatter(df.loc[m, cam_x], df.loc[m, cam_y],
-                         c=CORES[k], label=f"C{k+1}", s=60,
-                         alpha=0.8, edgecolors="k", lw=0.5)
-        ax_s.set_xlabel(f"{cam_x} (MPa)")
-        ax_s.set_ylabel(f"{cam_y} (MPa)")
-        ax_s.set_title(f"{cam_x} vs {cam_y}", fontweight="bold")
-        ax_s.legend(fontsize=7)
-
-    # Subleito × RMSE
-    ax_rmse = fig.add_subplot(gs[1, n_camadas - 1])
-    sc = ax_rmse.scatter(range(len(df)), df["Subleito"],
-                         c=df["RMSE"], cmap="RdYlGn_r",
-                         s=60, edgecolors="k", lw=0.5, zorder=3)
+    # ── Subleito × RMSE ──
+    ax_rmse = fig.add_subplot(gs[0, n_camadas])
+    sc = ax_rmse.scatter(
+        range(len(df)), df["Subleito"],
+        c=df["RMSE"], cmap="RdYlGn_r",
+        s=65, edgecolors="k", lw=0.5, zorder=3
+    )
     plt.colorbar(sc, ax=ax_rmse, label="RMSE")
-    ax_rmse.axhline(resultados["Subleito"]["E_rep"], color="red",
+    ax_rmse.axhline(resultados["Subleito"]["E_rep"], color=COR_P,
                     lw=2, ls="--",
-                    label=f"E_rep={resultados['Subleito']['E_rep']:.0f}")
+                    label=f"P{percentil}={resultados['Subleito']['E_rep']:.0f}")
+    ax_rmse.axhline(resultados["Subleito"]["e_rep_ms"], color=COR_MS,
+                    lw=2, ls="-.",
+                    label=f"μ−σ={resultados['Subleito']['e_rep_ms']:.0f}")
     ax_rmse.set_xlabel("Ponto de medição")
     ax_rmse.set_ylabel("Subleito (MPa)")
     ax_rmse.set_title("Subleito × RMSE", fontweight="bold")
     ax_rmse.legend(fontsize=8)
 
-    # Tabela resumo
-    ax_tab = fig.add_subplot(gs[1, n_camadas])
+    # ── Tabela resumo ──
+    ax_tab = fig.add_subplot(gs[1, :])
     ax_tab.axis("off")
+
     td = [[cam,
+           str(resultados[cam]["n_total"]),
+           str(resultados[cam]["n_filtrado"]),
+           "⚠ sim" if resultados[cam]["fallback"] else "não",
            f"{resultados[cam]['mu']:.0f}",
            f"{resultados[cam]['sigma']:.0f}",
            f"{resultados[cam]['cv']:.3f}",
-           f"{resultados[cam]['E_rep']:.0f}"]
+           f"{resultados[cam]['E_rep']:.0f}",
+           f"{resultados[cam]['e_rep_ms']:.0f}",
+           f"{abs(resultados[cam]['E_rep'] - resultados[cam]['e_rep_ms']):.0f}"]
           for cam in camadas]
+
     tbl = ax_tab.table(
         cellText=td,
-        colLabels=["Camada", "μ", "σ", "CV", "E_rep"],
+        colLabels=["Camada", "n total", "n filtrado", "Fallback",
+                   "μ", "σ", "CV",
+                   f"E_rep P{percentil}", "E_rep μ−σ", "Δ"],
         cellLoc="center", loc="center"
     )
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(9)
-    tbl.scale(1.1, 1.9)
+    tbl.scale(1.05, 2.0)
+
     idx_sub_row = camadas.index("Subleito") + 1
-    for col in range(5):
-        tbl[idx_sub_row, col].set_facecolor("#FFCDD2")
-    ax_tab.set_title(f"E_rep — P{res['percentil']}", fontweight="bold")
+    for col in range(10):
+        tbl[idx_sub_row, col].set_facecolor("#DBEAFE")
+
+    for i, cam in enumerate(camadas):
+        p = resultados[cam]["E_rep"]
+        m = resultados[cam]["e_rep_ms"]
+        if p > 0 and abs(p - m) / p > 0.10:
+            tbl[i + 1, 9].set_facecolor("#FEE2E2")
+
+    ax_tab.set_title(
+        f"Comparativo P{percentil} vs μ−σ  (vermelho = diferença > 10%)",
+        fontweight="bold"
+    )
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     return fig
 
 
 def gerar_pdf(resultados_todos, percentil):
-    """Gera PDF consolidado com todos os segmentos."""
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
 
@@ -289,56 +252,58 @@ def gerar_pdf(resultados_todos, percentil):
         fig_capa, ax = plt.subplots(figsize=(11, 8.5))
         ax.axis("off")
         ax.text(0.5, 0.65,
-                "Relatório de Análise GMM\nPavimentos Aeroportuários",
+                "Relatório de Análise KDE\nPavimentos Aeroportuários",
                 ha="center", va="center", fontsize=22,
-                fontweight="bold", color="#1F497D",
+                fontweight="bold", color="#0077B6",
                 transform=ax.transAxes)
         ax.text(0.5, 0.50,
-                f"Módulo Representativo — Percentil {percentil}",
-                ha="center", va="center", fontsize=14,
+                f"Módulo Representativo — P{percentil} vs μ−σ\n"
+                "KDE ponderado pelo RMSE  |  Silverman (1986)",
+                ha="center", va="center", fontsize=13,
                 color="#555555", transform=ax.transAxes)
-        ax.text(0.5, 0.40,
+        ax.text(0.5, 0.38,
                 f"Total de segmentos analisados: {len(resultados_todos)}",
                 ha="center", va="center", fontsize=12,
                 color="#333333", transform=ax.transAxes)
         pdf.savefig(fig_capa, bbox_inches="tight")
         plt.close(fig_capa)
 
-        # Figura de cada segmento
+        # Figura por segmento
         for nome, res in resultados_todos.items():
             fig = gerar_figura(res, nome)
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
         # Tabela comparativa
-        erep_vals    = [res["resultados"]["Subleito"]["E_rep"]
-                        for res in resultados_todos.values()]
-        idx_critico  = int(np.argmin(erep_vals))
-        nome_critico = list(resultados_todos.keys())[idx_critico]
+        nomes       = list(resultados_todos.keys())
+        erep_vals   = [res["resultados"]["Subleito"]["E_rep"]
+                       for res in resultados_todos.values()]
+        idx_critico = int(np.argmin(erep_vals))
+        nome_critico = nomes[idx_critico]
 
         fig_tab, ax_tab = plt.subplots(
-            figsize=(14, 3 + len(resultados_todos) * 0.7))
+            figsize=(16, 3 + len(resultados_todos) * 0.8))
         ax_tab.axis("off")
         ax_tab.set_title(
-            "Comparativo — Módulos Representativos por Segmento",
-            fontsize=13, fontweight="bold", color="#1F497D", pad=20)
+            "Comparativo — Módulos Representativos por Segmento (KDE)",
+            fontsize=13, fontweight="bold", color="#0077B6", pad=20)
 
-        headers = ["Segmento", "Camadas", "K", "C.Dom.",
-                   "μ Sub.", "CV Sub.",
-                   "E_rep Sub.", "E_rep Base", "E_rep Rev."]
+        headers = ["Segmento",
+                   f"P{percentil} Rev.", "μ−σ Rev.",
+                   f"P{percentil} Base", "μ−σ Base",
+                   f"P{percentil} Sub.", "μ−σ Sub.", "Δ Sub."]
         rows = []
         for nome, res in resultados_todos.items():
             r = res["resultados"]
             rows.append([
                 nome,
-                str(len(res["camadas"])),
-                str(res["k_otimo"]),
-                f"C{res['comp_dom']+1}",
-                f"{r['Subleito']['mu']:.1f}",
-                f"{r['Subleito']['cv']:.3f}",
-                f"{r['Subleito']['E_rep']:.1f}",
-                f"{r['Base']['E_rep']:.1f}",
                 f"{r['Revestimento']['E_rep']:.1f}",
+                f"{r['Revestimento']['e_rep_ms']:.1f}",
+                f"{r['Base']['E_rep']:.1f}",
+                f"{r['Base']['e_rep_ms']:.1f}",
+                f"{r['Subleito']['E_rep']:.1f}",
+                f"{r['Subleito']['e_rep_ms']:.1f}",
+                f"{abs(r['Subleito']['E_rep'] - r['Subleito']['e_rep_ms']):.1f}",
             ])
 
         tbl = ax_tab.table(
@@ -349,10 +314,10 @@ def gerar_pdf(resultados_todos, percentil):
         tbl.scale(1.0, 2.2)
 
         for col in range(len(headers)):
-            tbl[0, col].set_facecolor("#1F497D")
+            tbl[0, col].set_facecolor("#0077B6")
             tbl[0, col].get_text().set_color("white")
             tbl[0, col].get_text().set_fontweight("bold")
-            tbl[idx_critico + 1, col].set_facecolor("#FFCDD2")
+            tbl[idx_critico + 1, col].set_facecolor("#DBEAFE")
             tbl[idx_critico + 1, col].get_text().set_fontweight("bold")
 
         for row in range(1, len(rows) + 1):
@@ -366,7 +331,7 @@ def gerar_pdf(resultados_todos, percentil):
             f"★ Segmento crítico: {nome_critico}  |  "
             f"E_rep subleito = {erep_vals[idx_critico]:.1f} MPa  |  P{percentil}",
             ha="center", fontsize=10, fontweight="bold",
-            color="#C0392B", transform=ax_tab.transAxes)
+            color="#0077B6", transform=ax_tab.transAxes)
 
         pdf.savefig(fig_tab, bbox_inches="tight")
         plt.close(fig_tab)
@@ -397,7 +362,16 @@ with st.sidebar:
         "Pode misturar arquivos de 3 e 4 camadas."
     )
     st.markdown("---")
-    st.caption("O componente dominante é sempre definido pelo menor μ de subleito.")
+    st.markdown(
+        f"**Pipeline KDE:**\n\n"
+        f"1. Pesos = 1/RMSE (normalizados)\n"
+        f"2. Filtro RMSE ≤ 15% com fallback\n"
+        f"3. KDE com bandwidth de Silverman\n"
+        f"4. Reamostragem N = {N_RESAMPLE:,} pontos\n"
+        f"5. E_rep = P{{% }} da distribuição estimada"
+    )
+    st.markdown("---")
+    st.caption("Silverman (1986) · FAA AC 150/5370-11")
 
 # Upload
 st.subheader("📂 Upload dos Segmentos Homogêneos")
@@ -465,33 +439,45 @@ if uploaded_files:
 
             for nome, res in resultados_todos.items():
                 with st.expander(
-                    f"📍 **{nome}** — "
-                    f"{len(res['camadas'])} camadas  |  K = {res['k_otimo']}",
+                    f"📍 **{nome}** — {len(res['camadas'])} camadas",
                     expanded=True
                 ):
-                    r = res["resultados"]
+                    r       = res["resultados"]
                     camadas = res["camadas"]
 
                     # Métricas rápidas
-                    cols_met = st.columns(len(camadas) + 1)
-                    cols_met[0].metric("K ótimo (BIC)", res["k_otimo"])
+                    cols_met = st.columns(len(camadas))
                     for j, cam in enumerate(camadas):
                         label = (f"E_rep Subleito (P{percentil})"
                                  if cam == "Subleito" else f"E_rep {cam}")
-                        cols_met[j + 1].metric(
-                            label, f"{r[cam]['E_rep']:.0f} MPa",
-                            delta=f"μ = {r[cam]['mu']:.0f} MPa",
+                        cols_met[j].metric(
+                            label,
+                            f"{r[cam]['E_rep']:.0f} MPa",
+                            delta=f"μ−σ = {r[cam]['e_rep_ms']:.0f} MPa",
                             delta_color="off"
+                        )
+
+                    # Aviso de fallback
+                    fallbacks = [cam for cam in camadas if r[cam]["fallback"]]
+                    if fallbacks:
+                        st.warning(
+                            f"⚠️ Fallback ativado em: {', '.join(fallbacks)} — "
+                            "menos de 5 pontos com RMSE ≤ 15%. "
+                            "Todos os dados foram utilizados."
                         )
 
                     # Tabela detalhada
                     tabela = pd.DataFrame([
                         {
-                            "Camada": cam,
-                            "μ (MPa)": f"{r[cam]['mu']:.1f}",
-                            "σ (MPa)": f"{r[cam]['sigma']:.1f}",
-                            "CV": f"{r[cam]['cv']:.3f}",
-                            f"E_rep P{percentil} (MPa)": f"{r[cam]['E_rep']:.1f}"
+                            "Camada"          : cam,
+                            "n total"         : r[cam]["n_total"],
+                            "n filtrado"      : r[cam]["n_filtrado"],
+                            "μ (MPa)"         : f"{r[cam]['mu']:.1f}",
+                            "σ (MPa)"         : f"{r[cam]['sigma']:.1f}",
+                            "CV"              : f"{r[cam]['cv']:.3f}",
+                            f"E_rep P{percentil} (MPa)": f"{r[cam]['E_rep']:.1f}",
+                            "E_rep μ−σ (MPa)" : f"{r[cam]['e_rep_ms']:.1f}",
+                            "Δ (MPa)"         : f"{abs(r[cam]['E_rep'] - r[cam]['e_rep_ms']):.1f}"
                         }
                         for cam in camadas
                     ])
@@ -505,40 +491,39 @@ if uploaded_files:
 
             # ── Comparativo ──
             st.markdown("---")
-            st.subheader("🏆 Comparativo entre Segmentos")
+            st.subheader("🏆 Comparativo entre Segmentos — Todas as Camadas")
+
+            nomes       = list(resultados_todos.keys())
+            erep_p_sub  = [resultados_todos[n]["resultados"]["Subleito"]["E_rep"]
+                           for n in nomes]
+            erep_ms_sub = [resultados_todos[n]["resultados"]["Subleito"]["e_rep_ms"]
+                           for n in nomes]
+            idx_crit_p  = int(np.argmin(erep_p_sub))
+            idx_crit_ms = int(np.argmin(erep_ms_sub))
 
             dados_comp = []
-            erep_vals  = []
             for nome, res in resultados_todos.items():
-                r = res["resultados"]
-                erep_sub = r["Subleito"]["E_rep"]
-                erep_vals.append(erep_sub)
-                linha = {
-                    "Segmento"    : nome,
-                    "Camadas"     : len(res["camadas"]),
-                    "K"           : res["k_otimo"],
-                    "C. Dom."     : f"C{res['comp_dom']+1}",
-                    "μ Sub. (MPa)": f"{r['Subleito']['mu']:.1f}",
-                    "CV Sub."     : f"{r['Subleito']['cv']:.3f}",
-                    f"E_rep Sub. P{percentil} (MPa)": f"{erep_sub:.1f}",
-                    f"E_rep Base P{percentil} (MPa)": f"{r['Base']['E_rep']:.1f}",
-                    f"E_rep Rev. P{percentil} (MPa)": f"{r['Revestimento']['E_rep']:.1f}",
-                }
-                # Sub-base se existir
-                if "Sub-base" in r:
-                    linha[f"E_rep Sub-base P{percentil} (MPa)"] = \
-                        f"{r['Sub-base']['E_rep']:.1f}"
+                r   = res["resultados"]
+                cam = res["camadas"]
+                linha = {"Segmento": nome}
+                for c in cam:
+                    linha[f"P{percentil} {c}"] = f"{r[c]['E_rep']:.1f}"
+                    linha[f"μ−σ {c}"]          = f"{r[c]['e_rep_ms']:.1f}"
+                    linha[f"Δ {c}"]            = f"{abs(r[c]['E_rep'] - r[c]['e_rep_ms']):.1f}"
                 dados_comp.append(linha)
 
-            df_comp      = pd.DataFrame(dados_comp)
-            idx_critico  = int(np.argmin(erep_vals))
-            nome_critico = list(resultados_todos.keys())[idx_critico]
+            df_comp = pd.DataFrame(dados_comp)
 
             def highlight_critico(row):
-                if row["Segmento"] == nome_critico:
-                    return ["background-color: #FFCDD2; font-weight: bold"] \
-                           * len(row)
-                return [""] * len(row)
+                nome  = row["Segmento"]
+                cores = [""] * len(row)
+                if nome == nomes[idx_crit_p]:
+                    cores = ["background-color: #DBEAFE; font-weight: bold"] \
+                            * len(row)
+                if nome == nomes[idx_crit_ms] and idx_crit_ms != idx_crit_p:
+                    cores = ["background-color: #FEF3C7; font-weight: bold"] \
+                            * len(row)
+                return cores
 
             st.dataframe(
                 df_comp.style.apply(highlight_critico, axis=1),
@@ -546,11 +531,25 @@ if uploaded_files:
                 hide_index=True
             )
 
-            st.error(
-                f"🔴 **Segmento crítico: {nome_critico}** — "
-                f"E_rep subleito = **{erep_vals[idx_critico]:.1f} MPa** "
-                f"(P{percentil})\n\n"
-                "Este é o módulo governante para entrada no FAARFIELD."
+            if idx_crit_p == idx_crit_ms:
+                st.success(
+                    f"✅ Ambos os critérios identificam o mesmo segmento crítico: "
+                    f"**{nomes[idx_crit_p]}**\n\n"
+                    f"E_rep subleito — P{percentil}: **{erep_p_sub[idx_crit_p]:.1f} MPa** | "
+                    f"μ−σ: **{erep_ms_sub[idx_crit_ms]:.1f} MPa**"
+                )
+            else:
+                st.warning(
+                    f"⚠️ Os critérios divergem no segmento crítico.\n\n"
+                    f"🔵 P{percentil}: **{nomes[idx_crit_p]}** — "
+                    f"{erep_p_sub[idx_crit_p]:.1f} MPa\n\n"
+                    f"🟡 μ−σ: **{nomes[idx_crit_ms]}** — "
+                    f"{erep_ms_sub[idx_crit_ms]:.1f} MPa"
+                )
+
+            st.info(
+                "💡 O módulo de subleito do segmento crítico é o valor "
+                "governante para entrada no FAARFIELD."
             )
 
             # ── Download PDF ──
@@ -563,7 +562,7 @@ if uploaded_files:
             st.download_button(
                 label="⬇️ Baixar Relatório PDF",
                 data=pdf_buf,
-                file_name="relatorio_gmm_pavimento.pdf",
+                file_name="relatorio_kde_pavimento.pdf",
                 mime="application/pdf",
                 use_container_width=True,
                 type="primary"
