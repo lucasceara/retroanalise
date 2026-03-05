@@ -218,7 +218,7 @@ def gerar_figura(res, nome_segmento):
         p = resultados[cam]["E_rep"]
         m = resultados[cam]["e_rep_ms"]
         if p > 0 and abs(p - m) / p > 0.10:
-            tbl[i + 1, 9].set_facecolor("#FEE2E2")
+            tbl[i + 1, 7].set_facecolor("#FEE2E2")
 
     ax_tab.set_title(
         f"Comparativo P{percentil} vs μ−σ  (vermelho = diferença > 10%)",
