@@ -29,8 +29,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────────────────────
 # CONSTANTES
 # ─────────────────────────────────────────────────────────────
-LIMITE_ERRO_RMS = 15.0
-N_RESAMPLE      = 10000
+N_RESAMPLE = 10000
 
 
 # ─────────────────────────────────────────────────────────────
@@ -79,15 +78,10 @@ def calcular_kde_camada(serie, rmse_serie, percentil):
         "err": pd.to_numeric(rmse_serie, errors="coerce")
     }).dropna()
 
-    # Filtro RMSE com fallback
-    temp_clean = temp[temp["err"] <= LIMITE_ERRO_RMS].copy()
-    fallback = len(temp_clean) < 5
-    if fallback:
-        temp_clean = temp.copy()
-
-    pesos = 1.0 / temp_clean["err"].values.astype(float)
+    # Todos os pontos — ponderação pelo RMSE garante influência proporcional à qualidade
+    pesos = 1.0 / temp["err"].values.astype(float)
     pesos = pesos / pesos.sum()
-    vals  = temp_clean["val"].values.astype(float)
+    vals  = temp["val"].values.astype(float)
 
     # Estatísticas sem ponderação (μ−σ clássico)
     mu    = vals.mean()
@@ -113,9 +107,7 @@ def calcular_kde_camada(serie, rmse_serie, percentil):
         "E_rep": e_rep_p,
         "e_rep_ms": e_rep_ms,
         "percentil": percentil,
-        "n_total": len(temp),
-        "n_filtrado": len(temp_clean),
-        "fallback": fallback
+        "n_total": len(temp)
     }
 
 
@@ -172,12 +164,7 @@ def gerar_figura(res, nome_segmento):
         ax.set_ylabel("Densidade")
         ax.legend(fontsize=7)
 
-        if r["fallback"]:
-            ax.text(0.97, 0.97, "⚠ fallback\n(todos os dados)",
-                    transform=ax.transAxes, fontsize=6.5,
-                    ha="right", va="top", color="#E07A00",
-                    bbox=dict(boxstyle="round,pad=0.3",
-                              fc="#FFF8EE", ec="#E07A00", lw=0.8))
+
 
     # ── Subleito × RMSE ──
     ax_rmse = fig.add_subplot(gs[0, n_camadas])
@@ -204,8 +191,6 @@ def gerar_figura(res, nome_segmento):
 
     td = [[cam,
            str(resultados[cam]["n_total"]),
-           str(resultados[cam]["n_filtrado"]),
-           "⚠ sim" if resultados[cam]["fallback"] else "não",
            f"{resultados[cam]['mu']:.0f}",
            f"{resultados[cam]['sigma']:.0f}",
            f"{resultados[cam]['cv']:.3f}",
@@ -216,7 +201,7 @@ def gerar_figura(res, nome_segmento):
 
     tbl = ax_tab.table(
         cellText=td,
-        colLabels=["Camada", "n total", "n filtrado", "Fallback",
+        colLabels=["Camada", "n",
                    "μ", "σ", "CV",
                    f"E_rep P{percentil}", "E_rep μ−σ", "Δ"],
         cellLoc="center", loc="center"
@@ -226,7 +211,7 @@ def gerar_figura(res, nome_segmento):
     tbl.scale(1.05, 2.0)
 
     idx_sub_row = camadas.index("Subleito") + 1
-    for col in range(10):
+    for col in range(8):
         tbl[idx_sub_row, col].set_facecolor("#DBEAFE")
 
     for i, cam in enumerate(camadas):
@@ -364,14 +349,13 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(
         f"**Pipeline KDE:**\n\n"
-        f"1. Pesos = 1/RMSE (normalizados)\n"
-        f"2. Filtro RMSE ≤ 15% com fallback\n"
-        f"3. KDE com bandwidth de Silverman\n"
-        f"4. Reamostragem N = {N_RESAMPLE:,} pontos\n"
-        f"5. E_rep = P{{% }} da distribuição estimada"
+        f"1. Pesos = 1/RMSE — todos os pontos\n"
+        f"2. KDE com bandwidth de Silverman\n"
+        f"3. Reamostragem N = {N_RESAMPLE:,} pontos\n"
+        f"4. E_rep = P{{% }} da distribuição estimada"
     )
     st.markdown("---")
-    st.caption("Silverman (1986) · FAA AC 150/5370-11")
+    st.caption("Silverman (1986) · FAA AC 150/5370-11B")
 
 # Upload
 st.subheader("📂 Upload dos Segmentos Homogêneos")
@@ -457,21 +441,11 @@ if uploaded_files:
                             delta_color="off"
                         )
 
-                    # Aviso de fallback
-                    fallbacks = [cam for cam in camadas if r[cam]["fallback"]]
-                    if fallbacks:
-                        st.warning(
-                            f"⚠️ Fallback ativado em: {', '.join(fallbacks)} — "
-                            "menos de 5 pontos com RMSE ≤ 15%. "
-                            "Todos os dados foram utilizados."
-                        )
-
                     # Tabela detalhada
                     tabela = pd.DataFrame([
                         {
                             "Camada"          : cam,
-                            "n total"         : r[cam]["n_total"],
-                            "n filtrado"      : r[cam]["n_filtrado"],
+                            "n"               : r[cam]["n_total"],
                             "μ (MPa)"         : f"{r[cam]['mu']:.1f}",
                             "σ (MPa)"         : f"{r[cam]['sigma']:.1f}",
                             "CV"              : f"{r[cam]['cv']:.3f}",
