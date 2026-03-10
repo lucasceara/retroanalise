@@ -3,8 +3,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, shapiro, anderson
 from matplotlib.backends.backend_pdf import PdfPages
+import matplotlib.colors as mcolors
+import seaborn as sns
 import io
 import warnings
 warnings.filterwarnings("ignore")
@@ -33,8 +35,86 @@ N_RESAMPLE = 10000
 
 
 # ─────────────────────────────────────────────────────────────
-# FUNÇÕES
+# TESTES DE NORMALIDADE
 # ─────────────────────────────────────────────────────────────
+def testar_normalidade(df, camadas):
+    """Aplica SW e AD por camada. Retorna DataFrame com conclusões."""
+    registros = []
+    for cam in camadas:
+        vals = pd.to_numeric(df[cam], errors="coerce").dropna().values
+        n = len(vals)
+        if n < 3:
+            registros.append({
+                "Camada": cam, "n": n,
+                "SW_stat": None, "SW_p": None, "SW_normal": None,
+                "AD_stat": None, "AD_critico": None, "AD_normal": None,
+                "Conclusão": "Insuficiente"
+            })
+            continue
+
+        sw_stat, sw_p = shapiro(vals)
+        sw_normal = sw_p >= 0.05
+
+        ad_result  = anderson(vals, dist="norm")
+        ad_stat    = ad_result.statistic
+        ad_critico = ad_result.critical_values[2]  # α = 5%
+        ad_normal  = ad_stat < ad_critico
+
+        if sw_normal and ad_normal:
+            conclusao = "Normal"
+        elif not sw_normal and not ad_normal:
+            conclusao = "Não normal"
+        else:
+            conclusao = "Inconclusivo"
+
+        registros.append({
+            "Camada": cam, "n": n,
+            "SW_stat": round(sw_stat, 4), "SW_p": round(sw_p, 4),
+            "SW_normal": sw_normal,
+            "AD_stat": round(ad_stat, 4), "AD_critico": round(ad_critico, 4),
+            "AD_normal": ad_normal,
+            "Conclusão": conclusao
+        })
+    return pd.DataFrame(registros)
+
+
+def plotar_mapa_normalidade(df_norm, nome_segmento):
+    """Gera mapa de calor 1×n_camadas com cores por conclusão."""
+    cod = {"Normal": 1, "Inconclusivo": 0, "Não normal": -1, "Insuficiente": 0}
+    cmap   = mcolors.ListedColormap(["#e74c3c", "#f39c12", "#2ecc71"])
+    bounds = [-1.5, -0.5, 0.5, 1.5]
+    norm   = mcolors.BoundaryNorm(bounds, cmap.N)
+
+    camadas   = df_norm["Camada"].tolist()
+    conclusoes = df_norm["Conclusão"].tolist()
+    valores   = np.array([[cod.get(c, 0) for c in conclusoes]])
+
+    fig, ax = plt.subplots(figsize=(max(4, len(camadas) * 2), 1.6))
+    im = ax.imshow(valores, cmap=cmap, norm=norm, aspect="auto")
+
+    ax.set_xticks(range(len(camadas)))
+    ax.set_xticklabels(camadas, fontsize=11, fontweight="bold")
+    ax.set_yticks([])
+    ax.set_title(
+        f"Testes de Normalidade — {nome_segmento}  (SW + AD, α = 5%)",
+        fontsize=11, pad=8
+    )
+
+    for j, (cam, conc) in enumerate(zip(camadas, conclusoes)):
+        ax.text(j, 0, conc, ha="center", va="center",
+                fontsize=10, fontweight="bold", color="white")
+
+    from matplotlib.patches import Patch
+    legenda = [
+        Patch(facecolor="#2ecc71", label="Normal"),
+        Patch(facecolor="#f39c12", label="Inconclusivo"),
+        Patch(facecolor="#e74c3c", label="Não normal"),
+    ]
+    ax.legend(handles=legenda, bbox_to_anchor=(1.01, 1),
+              loc="upper left", fontsize=9, framealpha=0.9)
+
+    plt.tight_layout()
+    return fig
 def detectar_camadas(df_raw):
     n_cols = df_raw.shape[1]
     if n_cols == 4:
@@ -428,6 +508,30 @@ if uploaded_files:
                 ):
                     r       = res["resultados"]
                     camadas = res["camadas"]
+
+                    # Testes de normalidade
+                    df_norm = testar_normalidade(res["df"], camadas)
+                    fig_norm = plotar_mapa_normalidade(df_norm, nome)
+                    st.pyplot(fig_norm)
+                    plt.close(fig_norm)
+
+                    # Alerta automático se alguma camada não for normal
+                    nao_normais = df_norm[df_norm["Conclusão"] == "Não normal"]["Camada"].tolist()
+                    inconclusivos = df_norm[df_norm["Conclusão"] == "Inconclusivo"]["Camada"].tolist()
+                    if nao_normais:
+                        st.warning(
+                            f"⚠️ Distribuição **não normal** detectada em: "
+                            f"**{', '.join(nao_normais)}**. "
+                            f"O critério μ−σ pode não ser adequado para essas camadas."
+                        )
+                    if inconclusivos:
+                        st.info(
+                            f"ℹ️ Resultado **inconclusivo** em: "
+                            f"**{', '.join(inconclusivos)}**. "
+                            f"Adotar abordagem conservadora (não paramétrica)."
+                        )
+
+                    st.markdown("---")
 
                     # Métricas rápidas
                     cols_met = st.columns(len(camadas))
