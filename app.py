@@ -487,6 +487,30 @@ if uploaded_files:
             "você pode ajustar os valores manualmente se necessário."
         )
 
+        # ── Inicializar session_state para bounds ──
+        for cam in todas_camadas:
+            key_mat  = f"mat_{cam}"
+            key_min  = f"min_{cam}"
+            key_max  = f"max_{cam}"
+            key_prev = f"mat_prev_{cam}"
+
+            # Na primeira carga, inicializar com o primeiro material da lista
+            if key_mat not in st.session_state:
+                primeiro = list(MATERIAIS_CAMADA[cam].keys())[0]
+                st.session_state[key_mat]  = primeiro
+                mr_min0, mr_max0 = MATERIAIS_CAMADA[cam][primeiro]
+                st.session_state[key_min]  = mr_min0
+                st.session_state[key_max]  = mr_max0
+                st.session_state[key_prev] = primeiro
+
+            # Se o material mudou, atualizar os bounds automaticamente
+            mat_atual = st.session_state[key_mat]
+            if mat_atual != st.session_state.get(key_prev):
+                mr_min_novo, mr_max_novo = MATERIAIS_CAMADA[cam][mat_atual]
+                st.session_state[key_min]  = mr_min_novo
+                st.session_state[key_max]  = mr_max_novo
+                st.session_state[key_prev] = mat_atual
+
         bounds_interface = {}
         for cam in todas_camadas:
             st.markdown(f"**{cam}**")
@@ -494,37 +518,36 @@ if uploaded_files:
             col_mat, col_min, col_max = st.columns([3, 1, 1])
 
             with col_mat:
-                material_sel = st.selectbox(
+                st.selectbox(
                     f"Material — {cam}",
                     options=opcoes_material,
                     key=f"mat_{cam}",
                     label_visibility="collapsed"
                 )
 
-            mr_min_def, mr_max_def = MATERIAIS_CAMADA[cam][material_sel]
-
             with col_min:
-                mr_min = st.number_input(
+                st.number_input(
                     f"MR mín. {cam} (MPa)",
                     min_value=0,
-                    value=mr_min_def,
                     step=50,
                     key=f"min_{cam}",
                     label_visibility="collapsed",
-                    help=f"MR mínimo para {cam}"
+                    help=f"MR mínimo para {cam} — editável manualmente"
                 )
             with col_max:
-                mr_max = st.number_input(
+                st.number_input(
                     f"MR máx. {cam} (MPa)",
                     min_value=1,
-                    value=mr_max_def,
                     step=50,
                     key=f"max_{cam}",
                     label_visibility="collapsed",
-                    help=f"MR máximo para {cam}"
+                    help=f"MR máximo para {cam} — editável manualmente"
                 )
 
-            bounds_interface[cam] = (mr_min, mr_max)
+            bounds_interface[cam] = (
+                st.session_state[f"min_{cam}"],
+                st.session_state[f"max_{cam}"]
+            )
 
         # Mostrar resumo dos bounds definidos
         with st.expander("📋 Resumo dos intervalos definidos", expanded=False):
