@@ -167,6 +167,12 @@ def calcular_kde_camada(serie, rmse_serie, percentil):
     sigma = vals.std(ddof=1)
     cv    = sigma / mu if mu != 0 else 0
 
+    # μ−σ ponderado pelo RMSE
+    mu_w    = np.sum(pesos * vals)
+    sigma_w = np.sqrt(np.sum(pesos * (vals - mu_w) ** 2))
+    cv_w    = sigma_w / mu_w if mu_w != 0 else 0
+    e_rep_ms_w = max(mu_w - sigma_w, 0)
+
     # KDE ponderado
     kde     = gaussian_kde(vals, weights=pesos, bw_method="silverman")
     v_min   = vals.min() * 0.5
@@ -183,8 +189,10 @@ def calcular_kde_camada(serie, rmse_serie, percentil):
     return {
         "kde": kde, "vals": vals, "pesos": pesos,
         "mu": mu, "sigma": sigma, "cv": cv,
+        "mu_w": mu_w, "sigma_w": sigma_w, "cv_w": cv_w,
         "E_rep": e_rep_p,
         "e_rep_ms": e_rep_ms,
+        "e_rep_ms_w": e_rep_ms_w,
         "percentil": percentil,
         "n_total": len(temp)
     }
@@ -203,10 +211,11 @@ def rodar_pipeline(df, camadas, percentil=15):
 
 
 def gerar_figura(res, nome_segmento):
-    COR_KDE = "#0077B6"
-    COR_P   = "#E74C3C"
-    COR_MS  = "#E07A00"
-    COR_MU  = "#1A1A2E"
+    COR_KDE  = "#0077B6"
+    COR_P    = "#E74C3C"
+    COR_MS   = "#E07A00"
+    COR_MS_W = "#6A0DAD"   # roxo — μ−σ ponderado
+    COR_MU   = "#1A1A2E"
 
     df         = res["df"]
     camadas    = res["camadas"]
@@ -234,7 +243,9 @@ def gerar_figura(res, nome_segmento):
         ax.plot(x_r, y_r, color=COR_KDE, lw=2.5, label="KDE ponderado")
         ax.axvline(r["E_rep"], color=COR_P, lw=2, ls="--",
                    label=f"P{percentil} = {r['E_rep']:.0f}")
-        ax.axvline(r["e_rep_ms"], color=COR_MS, lw=2, ls="-.",
+        ax.axvline(r["e_rep_ms_w"], color=COR_MS_W, lw=2, ls="-.",
+                   label=f"μ_w−σ_w = {r['e_rep_ms_w']:.0f}")
+        ax.axvline(r["e_rep_ms"], color=COR_MS, lw=2, ls="--",
                    label=f"μ−σ = {r['e_rep_ms']:.0f}")
         ax.axvline(r["mu"], color=COR_MU, lw=1.2, ls=":",
                    label=f"μ = {r['mu']:.0f}")
@@ -256,8 +267,11 @@ def gerar_figura(res, nome_segmento):
     ax_rmse.axhline(resultados["Subleito"]["E_rep"], color=COR_P,
                     lw=2, ls="--",
                     label=f"P{percentil}={resultados['Subleito']['E_rep']:.0f}")
-    ax_rmse.axhline(resultados["Subleito"]["e_rep_ms"], color=COR_MS,
+    ax_rmse.axhline(resultados["Subleito"]["e_rep_ms_w"], color=COR_MS_W,
                     lw=2, ls="-.",
+                    label=f"μ_w−σ_w={resultados['Subleito']['e_rep_ms_w']:.0f}")
+    ax_rmse.axhline(resultados["Subleito"]["e_rep_ms"], color=COR_MS,
+                    lw=2, ls="--",
                     label=f"μ−σ={resultados['Subleito']['e_rep_ms']:.0f}")
     ax_rmse.set_xlabel("Ponto de medição")
     ax_rmse.set_ylabel("Subleito (MPa)")
@@ -274,15 +288,16 @@ def gerar_figura(res, nome_segmento):
            f"{resultados[cam]['sigma']:.0f}",
            f"{resultados[cam]['cv']:.3f}",
            f"{resultados[cam]['E_rep']:.0f}",
+           f"{resultados[cam]['e_rep_ms_w']:.0f}",
            f"{resultados[cam]['e_rep_ms']:.0f}",
-           f"{abs(resultados[cam]['E_rep'] - resultados[cam]['e_rep_ms']):.0f}"]
+           f"{abs(resultados[cam]['E_rep'] - resultados[cam]['e_rep_ms_w']):.0f}"]
           for cam in camadas]
 
     tbl = ax_tab.table(
         cellText=td,
         colLabels=["Camada", "n",
                    "μ", "σ", "CV",
-                   f"E_rep P{percentil}", "E_rep μ−σ", "Δ"],
+                   f"E_rep P{percentil}", "E_rep μ_w−σ_w", "E_rep μ−σ", "Δ (KDE vs pond.)"],
         cellLoc="center", loc="center"
     )
     tbl.auto_set_font_size(False)
@@ -290,17 +305,17 @@ def gerar_figura(res, nome_segmento):
     tbl.scale(1.05, 2.0)
 
     idx_sub_row = camadas.index("Subleito") + 1
-    for col in range(8):
+    for col in range(9):
         tbl[idx_sub_row, col].set_facecolor("#DBEAFE")
 
     for i, cam in enumerate(camadas):
         p = resultados[cam]["E_rep"]
-        m = resultados[cam]["e_rep_ms"]
+        m = resultados[cam]["e_rep_ms_w"]
         if p > 0 and abs(p - m) / p > 0.10:
-            tbl[i + 1, 7].set_facecolor("#FEE2E2")
+            tbl[i + 1, 8].set_facecolor("#FEE2E2")
 
     ax_tab.set_title(
-        f"Comparativo P{percentil} vs μ−σ  (vermelho = diferença > 10%)",
+        f"Comparativo P{percentil} vs μ_w−σ_w vs μ−σ  (vermelho = KDE vs ponderado > 10%)",
         fontweight="bold"
     )
 
@@ -547,14 +562,15 @@ if uploaded_files:
                     # Tabela detalhada
                     tabela = pd.DataFrame([
                         {
-                            "Camada"          : cam,
-                            "n"               : r[cam]["n_total"],
-                            "μ (MPa)"         : f"{r[cam]['mu']:.1f}",
-                            "σ (MPa)"         : f"{r[cam]['sigma']:.1f}",
-                            "CV"              : f"{r[cam]['cv']:.3f}",
-                            f"E_rep P{percentil} (MPa)": f"{r[cam]['E_rep']:.1f}",
-                            "E_rep μ−σ (MPa)" : f"{r[cam]['e_rep_ms']:.1f}",
-                            "Δ (MPa)"         : f"{abs(r[cam]['E_rep'] - r[cam]['e_rep_ms']):.1f}"
+                            "Camada"               : cam,
+                            "n"                    : r[cam]["n_total"],
+                            "μ (MPa)"              : f"{r[cam]['mu']:.1f}",
+                            "σ (MPa)"              : f"{r[cam]['sigma']:.1f}",
+                            "CV"                   : f"{r[cam]['cv']:.3f}",
+                            f"E_rep P{percentil} (MPa)" : f"{r[cam]['E_rep']:.1f}",
+                            "E_rep μ_w−σ_w (MPa)"  : f"{r[cam]['e_rep_ms_w']:.1f}",
+                            "E_rep μ−σ (MPa)"      : f"{r[cam]['e_rep_ms']:.1f}",
+                            "Δ KDE vs pond. (MPa)" : f"{abs(r[cam]['E_rep'] - r[cam]['e_rep_ms_w']):.1f}"
                         }
                         for cam in camadas
                     ])
@@ -584,9 +600,10 @@ if uploaded_files:
                 cam = res["camadas"]
                 linha = {"Segmento": nome}
                 for c in cam:
-                    linha[f"P{percentil} {c}"] = f"{r[c]['E_rep']:.1f}"
-                    linha[f"μ−σ {c}"]          = f"{r[c]['e_rep_ms']:.1f}"
-                    linha[f"Δ {c}"]            = f"{abs(r[c]['E_rep'] - r[c]['e_rep_ms']):.1f}"
+                    linha[f"P{percentil} {c}"]   = f"{r[c]['E_rep']:.1f}"
+                    linha[f"μ_w−σ_w {c}"]        = f"{r[c]['e_rep_ms_w']:.1f}"
+                    linha[f"μ−σ {c}"]            = f"{r[c]['e_rep_ms']:.1f}"
+                    linha[f"Δ pond. {c}"]        = f"{abs(r[c]['E_rep'] - r[c]['e_rep_ms_w']):.1f}"
                 dados_comp.append(linha)
 
             df_comp = pd.DataFrame(dados_comp)
