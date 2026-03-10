@@ -6,7 +6,6 @@ import matplotlib.gridspec as gridspec
 from scipy.stats import gaussian_kde, shapiro, anderson
 from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.colors as mcolors
-import seaborn as sns
 import io
 import warnings
 warnings.filterwarnings("ignore")
