@@ -289,15 +289,14 @@ def gerar_figura(res, nome_segmento):
            f"{resultados[cam]['cv']:.3f}",
            f"{resultados[cam]['E_rep']:.0f}",
            f"{resultados[cam]['e_rep_ms_w']:.0f}",
-           f"{resultados[cam]['e_rep_ms']:.0f}",
-           f"{abs(resultados[cam]['E_rep'] - resultados[cam]['e_rep_ms_w']):.0f}"]
+           f"{resultados[cam]['e_rep_ms']:.0f}"]
           for cam in camadas]
 
     tbl = ax_tab.table(
         cellText=td,
         colLabels=["Camada", "n",
                    "μ", "σ", "CV",
-                   f"E_rep P{percentil}", "E_rep μ_w−σ_w", "E_rep μ−σ", "Δ (KDE vs pond.)"],
+                   f"E_rep P{percentil}", "E_rep μ_w−σ_w", "E_rep μ−σ"],
         cellLoc="center", loc="center"
     )
     tbl.auto_set_font_size(False)
@@ -305,17 +304,11 @@ def gerar_figura(res, nome_segmento):
     tbl.scale(1.05, 2.0)
 
     idx_sub_row = camadas.index("Subleito") + 1
-    for col in range(9):
+    for col in range(8):
         tbl[idx_sub_row, col].set_facecolor("#DBEAFE")
 
-    for i, cam in enumerate(camadas):
-        p = resultados[cam]["E_rep"]
-        m = resultados[cam]["e_rep_ms_w"]
-        if p > 0 and abs(p - m) / p > 0.10:
-            tbl[i + 1, 8].set_facecolor("#FEE2E2")
-
     ax_tab.set_title(
-        f"Comparativo P{percentil} vs μ_w−σ_w vs μ−σ  (vermelho = KDE vs ponderado > 10%)",
+        f"Módulos Representativos — P{percentil} | μ_w−σ_w | μ−σ",
         fontweight="bold"
     )
 
@@ -336,7 +329,7 @@ def gerar_pdf(resultados_todos, percentil):
                 fontweight="bold", color="#0077B6",
                 transform=ax.transAxes)
         ax.text(0.5, 0.50,
-                f"Módulo Representativo — P{percentil} vs μ−σ\n"
+                f"Módulo Representativo — P{percentil} | μ_w−σ_w | μ−σ\n"
                 "KDE ponderado pelo RMSE  |  Silverman (1986)",
                 ha="center", va="center", fontsize=13,
                 color="#555555", transform=ax.transAxes)
@@ -352,68 +345,6 @@ def gerar_pdf(resultados_todos, percentil):
             fig = gerar_figura(res, nome)
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
-
-        # Tabela comparativa
-        nomes       = list(resultados_todos.keys())
-        erep_vals   = [res["resultados"]["Subleito"]["E_rep"]
-                       for res in resultados_todos.values()]
-        idx_critico = int(np.argmin(erep_vals))
-        nome_critico = nomes[idx_critico]
-
-        fig_tab, ax_tab = plt.subplots(
-            figsize=(16, 3 + len(resultados_todos) * 0.8))
-        ax_tab.axis("off")
-        ax_tab.set_title(
-            "Comparativo — Módulos Representativos por Segmento (KDE)",
-            fontsize=13, fontweight="bold", color="#0077B6", pad=20)
-
-        headers = ["Segmento",
-                   f"P{percentil} Rev.", "μ−σ Rev.",
-                   f"P{percentil} Base", "μ−σ Base",
-                   f"P{percentil} Sub.", "μ−σ Sub.", "Δ Sub."]
-        rows = []
-        for nome, res in resultados_todos.items():
-            r = res["resultados"]
-            rows.append([
-                nome,
-                f"{r['Revestimento']['E_rep']:.1f}",
-                f"{r['Revestimento']['e_rep_ms']:.1f}",
-                f"{r['Base']['E_rep']:.1f}",
-                f"{r['Base']['e_rep_ms']:.1f}",
-                f"{r['Subleito']['E_rep']:.1f}",
-                f"{r['Subleito']['e_rep_ms']:.1f}",
-                f"{abs(r['Subleito']['E_rep'] - r['Subleito']['e_rep_ms']):.1f}",
-            ])
-
-        tbl = ax_tab.table(
-            cellText=rows, colLabels=headers,
-            cellLoc="center", loc="center")
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(8.5)
-        tbl.scale(1.0, 2.2)
-
-        for col in range(len(headers)):
-            tbl[0, col].set_facecolor("#0077B6")
-            tbl[0, col].get_text().set_color("white")
-            tbl[0, col].get_text().set_fontweight("bold")
-            tbl[idx_critico + 1, col].set_facecolor("#DBEAFE")
-            tbl[idx_critico + 1, col].get_text().set_fontweight("bold")
-
-        for row in range(1, len(rows) + 1):
-            if row != idx_critico + 1:
-                fill = "#EBF3FB" if row % 2 == 0 else "white"
-                for col in range(len(headers)):
-                    tbl[row, col].set_facecolor(fill)
-
-        ax_tab.text(
-            0.5, 0.02,
-            f"★ Segmento crítico: {nome_critico}  |  "
-            f"E_rep subleito = {erep_vals[idx_critico]:.1f} MPa  |  P{percentil}",
-            ha="center", fontsize=10, fontweight="bold",
-            color="#0077B6", transform=ax_tab.transAxes)
-
-        pdf.savefig(fig_tab, bbox_inches="tight")
-        plt.close(fig_tab)
 
     buf.seek(0)
     return buf
@@ -552,25 +483,19 @@ if uploaded_files:
                     for j, cam in enumerate(camadas):
                         label = (f"E_rep Subleito (P{percentil})"
                                  if cam == "Subleito" else f"E_rep {cam}")
-                        cols_met[j].metric(
-                            label,
-                            f"{r[cam]['E_rep']:.0f} MPa",
-                            delta=f"μ−σ = {r[cam]['e_rep_ms']:.0f} MPa",
-                            delta_color="off"
-                        )
+                        cols_met[j].metric(label, f"{r[cam]['E_rep']:.0f} MPa")
 
                     # Tabela detalhada
                     tabela = pd.DataFrame([
                         {
-                            "Camada"               : cam,
-                            "n"                    : r[cam]["n_total"],
-                            "μ (MPa)"              : f"{r[cam]['mu']:.1f}",
-                            "σ (MPa)"              : f"{r[cam]['sigma']:.1f}",
-                            "CV"                   : f"{r[cam]['cv']:.3f}",
+                            "Camada"                    : cam,
+                            "n"                         : r[cam]["n_total"],
+                            "μ (MPa)"                   : f"{r[cam]['mu']:.1f}",
+                            "σ (MPa)"                   : f"{r[cam]['sigma']:.1f}",
+                            "CV"                        : f"{r[cam]['cv']:.3f}",
                             f"E_rep P{percentil} (MPa)" : f"{r[cam]['E_rep']:.1f}",
-                            "E_rep μ_w−σ_w (MPa)"  : f"{r[cam]['e_rep_ms_w']:.1f}",
-                            "E_rep μ−σ (MPa)"      : f"{r[cam]['e_rep_ms']:.1f}",
-                            "Δ KDE vs pond. (MPa)" : f"{abs(r[cam]['E_rep'] - r[cam]['e_rep_ms_w']):.1f}"
+                            "E_rep μ_w−σ_w (MPa)"       : f"{r[cam]['e_rep_ms_w']:.1f}",
+                            "E_rep μ−σ (MPa)"           : f"{r[cam]['e_rep_ms']:.1f}",
                         }
                         for cam in camadas
                     ])
@@ -586,13 +511,7 @@ if uploaded_files:
             st.markdown("---")
             st.subheader("🏆 Comparativo entre Segmentos — Todas as Camadas")
 
-            nomes       = list(resultados_todos.keys())
-            erep_p_sub  = [resultados_todos[n]["resultados"]["Subleito"]["E_rep"]
-                           for n in nomes]
-            erep_ms_sub = [resultados_todos[n]["resultados"]["Subleito"]["e_rep_ms"]
-                           for n in nomes]
-            idx_crit_p  = int(np.argmin(erep_p_sub))
-            idx_crit_ms = int(np.argmin(erep_ms_sub))
+
 
             dados_comp = []
             for nome, res in resultados_todos.items():
@@ -600,51 +519,13 @@ if uploaded_files:
                 cam = res["camadas"]
                 linha = {"Segmento": nome}
                 for c in cam:
-                    linha[f"P{percentil} {c}"]   = f"{r[c]['E_rep']:.1f}"
-                    linha[f"μ_w−σ_w {c}"]        = f"{r[c]['e_rep_ms_w']:.1f}"
-                    linha[f"μ−σ {c}"]            = f"{r[c]['e_rep_ms']:.1f}"
-                    linha[f"Δ pond. {c}"]        = f"{abs(r[c]['E_rep'] - r[c]['e_rep_ms_w']):.1f}"
+                    linha[f"P{percentil} {c}"]  = f"{r[c]['E_rep']:.1f}"
+                    linha[f"μ_w−σ_w {c}"]       = f"{r[c]['e_rep_ms_w']:.1f}"
+                    linha[f"μ−σ {c}"]           = f"{r[c]['e_rep_ms']:.1f}"
                 dados_comp.append(linha)
 
             df_comp = pd.DataFrame(dados_comp)
-
-            def highlight_critico(row):
-                nome  = row["Segmento"]
-                cores = [""] * len(row)
-                if nome == nomes[idx_crit_p]:
-                    cores = ["background-color: #DBEAFE; font-weight: bold"] \
-                            * len(row)
-                if nome == nomes[idx_crit_ms] and idx_crit_ms != idx_crit_p:
-                    cores = ["background-color: #FEF3C7; font-weight: bold"] \
-                            * len(row)
-                return cores
-
-            st.dataframe(
-                df_comp.style.apply(highlight_critico, axis=1),
-                use_container_width=True,
-                hide_index=True
-            )
-
-            if idx_crit_p == idx_crit_ms:
-                st.success(
-                    f"✅ Ambos os critérios identificam o mesmo segmento crítico: "
-                    f"**{nomes[idx_crit_p]}**\n\n"
-                    f"E_rep subleito — P{percentil}: **{erep_p_sub[idx_crit_p]:.1f} MPa** | "
-                    f"μ−σ: **{erep_ms_sub[idx_crit_ms]:.1f} MPa**"
-                )
-            else:
-                st.warning(
-                    f"⚠️ Os critérios divergem no segmento crítico.\n\n"
-                    f"🔵 P{percentil}: **{nomes[idx_crit_p]}** — "
-                    f"{erep_p_sub[idx_crit_p]:.1f} MPa\n\n"
-                    f"🟡 μ−σ: **{nomes[idx_crit_ms]}** — "
-                    f"{erep_ms_sub[idx_crit_ms]:.1f} MPa"
-                )
-
-            st.info(
-                "💡 O módulo de subleito do segmento crítico é o valor "
-                "governante para entrada no FAARFIELD."
-            )
+            st.dataframe(df_comp, use_container_width=True, hide_index=True)
 
             # ── Download PDF ──
             st.markdown("---")
