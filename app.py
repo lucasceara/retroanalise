@@ -480,82 +480,101 @@ if uploaded_files:
         # ── Seção: Filtro de Bounds Físicos ──
         st.subheader("🔍 Filtro de Bounds Físicos — Controle de Qualidade")
         st.markdown(
-            "Defina os intervalos de MR admissíveis para cada camada. "
-            "Linhas com qualquer valor fora do intervalo serão **removidas antes de qualquer cálculo** "
-            "(μ−σ, μ_w−σ_w e KDE).\n\n"
-            "Selecione o material para preencher automaticamente os limites — "
-            "você pode ajustar os valores manualmente se necessário."
+            "Recomendado para retroanálises realizadas sem restrição de camadas (ex.: BakFAA). "
+            "Se o software de retroanálise já aplicou bounds durante a otimização, "
+            "**desative esta opção** para evitar filtragem redundante."
         )
 
-        # ── Inicializar session_state para bounds ──
-        for cam in todas_camadas:
-            key_mat  = f"mat_{cam}"
-            key_min  = f"min_{cam}"
-            key_max  = f"max_{cam}"
-            key_prev = f"mat_prev_{cam}"
-
-            # Na primeira carga, inicializar com o primeiro material da lista
-            if key_mat not in st.session_state:
-                primeiro = list(MATERIAIS_CAMADA[cam].keys())[0]
-                st.session_state[key_mat]  = primeiro
-                mr_min0, mr_max0 = MATERIAIS_CAMADA[cam][primeiro]
-                st.session_state[key_min]  = mr_min0
-                st.session_state[key_max]  = mr_max0
-                st.session_state[key_prev] = primeiro
-
-            # Se o material mudou, atualizar os bounds automaticamente
-            mat_atual = st.session_state[key_mat]
-            if mat_atual != st.session_state.get(key_prev):
-                mr_min_novo, mr_max_novo = MATERIAIS_CAMADA[cam][mat_atual]
-                st.session_state[key_min]  = mr_min_novo
-                st.session_state[key_max]  = mr_max_novo
-                st.session_state[key_prev] = mat_atual
+        usar_filtro = st.checkbox(
+            "Aplicar filtro de bounds físicos",
+            value=True,
+            help=(
+                "Ativado: remove linhas com MR fora dos intervalos antes de qualquer cálculo "
+                "(μ−σ, μ_w−σ_w e KDE). "
+                "Desativado: todos os dados brutos são utilizados diretamente."
+            )
+        )
 
         bounds_interface = {}
-        for cam in todas_camadas:
-            st.markdown(f"**{cam}**")
-            opcoes_material = list(MATERIAIS_CAMADA.get(cam, {}).keys())
-            col_mat, col_min, col_max = st.columns([3, 1, 1])
 
-            with col_mat:
-                st.selectbox(
-                    f"Material — {cam}",
-                    options=opcoes_material,
-                    key=f"mat_{cam}",
-                    label_visibility="collapsed"
-                )
-
-            with col_min:
-                st.number_input(
-                    f"MR mín. {cam} (MPa)",
-                    min_value=0,
-                    step=50,
-                    key=f"min_{cam}",
-                    label_visibility="collapsed",
-                    help=f"MR mínimo para {cam} — editável manualmente"
-                )
-            with col_max:
-                st.number_input(
-                    f"MR máx. {cam} (MPa)",
-                    min_value=1,
-                    step=50,
-                    key=f"max_{cam}",
-                    label_visibility="collapsed",
-                    help=f"MR máximo para {cam} — editável manualmente"
-                )
-
-            bounds_interface[cam] = (
-                st.session_state[f"min_{cam}"],
-                st.session_state[f"max_{cam}"]
+        if usar_filtro:
+            st.markdown(
+                "Selecione o material de cada camada para preencher automaticamente os limites. "
+                "Os valores podem ser ajustados manualmente se necessário."
             )
 
-        # Mostrar resumo dos bounds definidos
-        with st.expander("📋 Resumo dos intervalos definidos", expanded=False):
-            df_bounds = pd.DataFrame([
-                {"Camada": cam, "MR mínimo (MPa)": v[0], "MR máximo (MPa)": v[1]}
-                for cam, v in bounds_interface.items()
-            ])
-            st.dataframe(df_bounds, use_container_width=True, hide_index=True)
+            # ── Inicializar session_state para bounds ──
+            for cam in todas_camadas:
+                key_mat  = f"mat_{cam}"
+                key_min  = f"min_{cam}"
+                key_max  = f"max_{cam}"
+                key_prev = f"mat_prev_{cam}"
+
+                if key_mat not in st.session_state:
+                    primeiro = list(MATERIAIS_CAMADA[cam].keys())[0]
+                    st.session_state[key_mat]  = primeiro
+                    mr_min0, mr_max0 = MATERIAIS_CAMADA[cam][primeiro]
+                    st.session_state[key_min]  = mr_min0
+                    st.session_state[key_max]  = mr_max0
+                    st.session_state[key_prev] = primeiro
+
+                mat_atual = st.session_state[key_mat]
+                if mat_atual != st.session_state.get(key_prev):
+                    mr_min_novo, mr_max_novo = MATERIAIS_CAMADA[cam][mat_atual]
+                    st.session_state[key_min]  = mr_min_novo
+                    st.session_state[key_max]  = mr_max_novo
+                    st.session_state[key_prev] = mat_atual
+
+            for cam in todas_camadas:
+                st.markdown(f"**{cam}**")
+                opcoes_material = list(MATERIAIS_CAMADA.get(cam, {}).keys())
+                col_mat, col_min, col_max = st.columns([3, 1, 1])
+
+                with col_mat:
+                    st.selectbox(
+                        f"Material — {cam}",
+                        options=opcoes_material,
+                        key=f"mat_{cam}",
+                        label_visibility="collapsed"
+                    )
+
+                with col_min:
+                    st.number_input(
+                        f"MR mín. {cam} (MPa)",
+                        min_value=0,
+                        step=50,
+                        key=f"min_{cam}",
+                        label_visibility="collapsed",
+                        help=f"MR mínimo para {cam} — editável manualmente"
+                    )
+                with col_max:
+                    st.number_input(
+                        f"MR máx. {cam} (MPa)",
+                        min_value=1,
+                        step=50,
+                        key=f"max_{cam}",
+                        label_visibility="collapsed",
+                        help=f"MR máximo para {cam} — editável manualmente"
+                    )
+
+                bounds_interface[cam] = (
+                    st.session_state[f"min_{cam}"],
+                    st.session_state[f"max_{cam}"]
+                )
+
+            with st.expander("📋 Resumo dos intervalos definidos", expanded=False):
+                df_bounds = pd.DataFrame([
+                    {"Camada": cam, "MR mínimo (MPa)": v[0], "MR máximo (MPa)": v[1]}
+                    for cam, v in bounds_interface.items()
+                ])
+                st.dataframe(df_bounds, use_container_width=True, hide_index=True)
+
+        else:
+            st.info(
+                "ℹ️ Filtro de bounds desativado — todos os dados brutos serão utilizados. "
+                "Certifique-se de que o software de retroanálise já aplicou restrições físicas "
+                "durante a otimização."
+            )
 
         st.markdown("---")
 
@@ -594,26 +613,32 @@ if uploaded_files:
                     n_original = len(df)
 
                     # ── FILTRO DE BOUNDS — PASSO 1 DO PIPELINE ──
-                    bounds_arquivo = {
-                        cam: bounds_interface[cam]
-                        for cam in camadas
-                        if cam in bounds_interface
-                    }
-                    df_filtrado, n_removidos, detalhes_filtro = aplicar_filtro_bounds(
-                        df, camadas, bounds_arquivo
-                    )
-
-                    if len(df_filtrado) < 3:
-                        erros.append(
-                            f"**{nome}**: após filtro de bounds restaram apenas "
-                            f"{len(df_filtrado)} pontos — insuficiente para análise."
+                    if usar_filtro and bounds_interface:
+                        bounds_arquivo = {
+                            cam: bounds_interface[cam]
+                            for cam in camadas
+                            if cam in bounds_interface
+                        }
+                        df_filtrado, n_removidos, detalhes_filtro = aplicar_filtro_bounds(
+                            df, camadas, bounds_arquivo
                         )
-                        continue
+
+                        if len(df_filtrado) < 3:
+                            erros.append(
+                                f"**{nome}**: após filtro de bounds restaram apenas "
+                                f"{len(df_filtrado)} pontos — insuficiente para análise."
+                            )
+                            continue
+                    else:
+                        df_filtrado    = df.copy()
+                        n_removidos    = 0
+                        detalhes_filtro = {cam: {"mr_min": None, "mr_max": None, "n_removidos": 0} for cam in camadas}
 
                     res = rodar_pipeline(df_filtrado, camadas, percentil=percentil)
-                    res["n_original"]     = n_original
-                    res["n_removidos"]    = n_removidos
+                    res["n_original"]      = n_original
+                    res["n_removidos"]     = n_removidos
                     res["detalhes_filtro"] = detalhes_filtro
+                    res["filtro_ativo"]    = usar_filtro
                     resultados_todos[nome] = res
 
                 except Exception as e:
@@ -644,7 +669,12 @@ if uploaded_files:
                         n_rem  = res["n_removidos"]
                         n_util = n_orig - n_rem
 
-                        if n_rem == 0:
+                        if not res.get("filtro_ativo", True):
+                            st.info(
+                                f"ℹ️ Filtro de bounds desativado — análise realizada "
+                                f"com todos os **{n_orig} pontos** brutos."
+                            )
+                        elif n_rem == 0:
                             st.success(
                                 f"✅ Filtro de bounds: todos os {n_orig} pontos "
                                 f"estão dentro dos intervalos físicos admissíveis."
